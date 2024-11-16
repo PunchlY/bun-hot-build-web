@@ -5,6 +5,7 @@
 Front-end building solution based on [bun](https://bun.sh/).
 
 - [x] 热构建
+- [x] 打包成单文件
 - [ ] 多入口点
 
 ## Development
