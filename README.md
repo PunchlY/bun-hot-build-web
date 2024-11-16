@@ -14,7 +14,6 @@ bun run dev &
 curl http://127.0.0.1:3000/
 
 #bun > $ NODE_ENV=development bun run --hot index.ts
-#bun > [build] 2024-11-16T09:40:07.975Z
 #bun > [watch] 2024-11-16T09:41:41.192Z filename=/var/www/bun-web/index.html
 #bun > [build] 2024-11-16T09:41:41.196Z
 #bun > [watch] 2024-11-16T09:41:41.196Z filename=/var/www/bun-web/client.ts
