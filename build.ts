@@ -1,7 +1,7 @@
-import type { Serve } from 'bun';
+import type { Server } from 'bun';
 import { resolve, relative, basename, dirname } from 'path';
 import { watch, type FSWatcher } from 'fs';
-import { staticDataEncode_macro } from './client-serve' with { type: 'macro' };
+import { staticDataEncode_macro } from './build' with { type: 'macro' };
 import { unescapeHTML } from './lib/html';
 
 const entry = 'index.html', assets = 'public';
@@ -9,11 +9,9 @@ const entry = 'index.html', assets = 'public';
 function build() {
     return new class Build {
         #entry = entry;
-        #map?: Map<`/${string}`, Response>;
+        #map?: Map<`/${string}`, { body: Buffer, type: string; }>;
         #watch?: Map<string, FSWatcher>;
-        get entry() {
-            return this.#entry;
-        }
+        #server?: Server;
         #watchFile(filename: string) {
             this.#watch ??= new Map();
             if (this.#watch.has(filename))
@@ -25,7 +23,7 @@ function build() {
                     this.#watch?.get(filename)?.close();
                     this.#watch?.delete(filename);
                 }
-                await this.dev(undefined, true);
+                await this.dev(undefined, undefined, true);
             }));
         }
         async *[Symbol.asyncIterator]() {
@@ -49,7 +47,7 @@ function build() {
                         }
                     },
                 })
-                .transform(new Response(Bun.mmap(entry), { headers: { 'Content-Type': 'text/html;charset=utf-8' } }));
+                .transform(Bun.mmap(entry)) as unknown as ArrayBuffer;
             const { outputs, success, logs } = await Bun.build({
                 entrypoints,
                 target: 'browser',
@@ -84,11 +82,11 @@ function build() {
                     for (const filename of sources)
                         this.#watchFile(resolve(process.cwd(), filename));
                 }
-                yield [path, output] as const;
+                yield [path, Buffer.from(await output.arrayBuffer()), output.type] as const;
             }
             yield [
                 '/',
-                await new HTMLRewriter()
+                Buffer.from(new HTMLRewriter()
                     .on('head', {
                         element(element) {
                             element.onEndTag((end) => {
@@ -104,11 +102,13 @@ function build() {
                                     element.prepend(`<pre>${Bun.escapeHTML(JSON.stringify(message, null, 2))}<pre>`, { html: true });
                         },
                     })
-                    .transform(html)
-                    .blob(),
+                    .transform(html) as unknown as ArrayBuffer),
+                'text/html;charset=utf-8',
             ] as const;
         }
-        async dev(entry?: string, rebuild = false) {
+        async dev(server?: Server, entry?: string, rebuild = false) {
+            if (server)
+                this.#server = server;
             if (entry && entry !== this.#entry) {
                 this.#entry = entry;
                 rebuild = true;
@@ -117,8 +117,9 @@ function build() {
                 return this.#map;
             this.#map ??= new Map();
             this.#map.clear();
-            for await (const [path, blob] of this)
-                this.#map.set(path, new Response(blob));
+            for await (const [path, body, type] of this)
+                this.#map.set(path, { body, type });
+            this.#server?.publish('build', Date());
             return this.#map;
         }
     };
@@ -127,13 +128,12 @@ function build() {
 async function staticDataEncode() {
     const encodeData: Partial<Record<BufferEncoding, Record<string, Record<`/${string}`, string>>>> = {};
     if (process.env.NODE_ENV === 'production') {
-        for await (const [path, res] of staticData()) {
-            const { type } = res;
+        for await (const [path, body, type] of staticData()) {
             const encoding = type.startsWith('text/') ? 'utf-8' : 'base64';
             encodeData[encoding] ??= {};
             encodeData[encoding][type] ??= {};
-            encodeData[encoding][type][path] = Buffer.from(await res.arrayBuffer()).toString(encoding);
-            console.debug('[assets] %o path=%s type=%s', new Date(), path, res.type);
+            encodeData[encoding][type][path] = body.toString(encoding);
+            console.debug('[assets] %o path=%s type=%s', new Date(), path, type);
         }
     }
     return encodeData;
@@ -153,7 +153,7 @@ async function staticDataEncode() {
             readdir ${Bun.$.escape(resolve(process.cwd(), assets))}
         `}`.lines()) {
             if (filename)
-                yield [`/${relative(process.cwd(), filename)}`, new Blob([Bun.mmap(filename)], { type: Bun.file(filename).type })] as const;
+                yield [`/${relative(process.cwd(), filename)}`, Buffer.from(Bun.mmap(filename)), Bun.file(filename).type] as const;
         }
     }
 }
@@ -162,14 +162,11 @@ declare global {
     var $build: ReturnType<typeof build> | undefined;
 }
 
-const notFound = /* @__PURE__ */ new Response('Not Found', { status: 404 });
-
-async function dev(pathname: string) {
-    global.$build ??= build();
-    const buildList = await global.$build.dev(entry);
+async function dev(pathname: string, server: Server) {
+    const buildList = await (global.$build ??= build()).dev(server, entry);
     const output = buildList.get(pathname as `/${string}`);
     if (output)
-        return output;
+        return new Response(output.body, { headers: { 'Content-Type': output.type } });
     if (!pathname.startsWith(`/${assets}`))
         return;
     const fd = Bun.file(`${process.cwd()}${pathname}`);
@@ -177,30 +174,17 @@ async function dev(pathname: string) {
         return new Response(fd);
 }
 
-type FromEntries = <K extends PropertyKey, V>(entries: Iterable<readonly [K, V]>) => Record<K, V>;
-type Entries = <T extends object>(o: T) => [T extends Partial<Record<infer K, any>> ? K : never, T extends Record<any, infer V> ? V : never][];
-let staticData: Serve['static'];
-export default {
-    get static() {
-        return staticData ??= (Object.fromEntries as FromEntries)(staticDataDecode());
-        function* staticDataDecode() {
-            const entries: Entries = Object.entries;
-            for (const [encoding, map] of entries(staticDataEncode_macro() as unknown as Awaited<ReturnType<typeof staticDataEncode_macro>>))
-                for (const [type, route] of entries(map))
-                    for (const [path, text] of entries(route))
-                        yield [path, new Response(Buffer.from(text, encoding), { headers: { 'Content-Type': type } })] as const;
-        }
-    },
-    async fetch(request) {
-        if (process.env.NODE_ENV !== 'production') {
-            const { url } = request;
-            const pathIndex = url.indexOf('/', 8);
-            const queryIndex = url.indexOf('?', pathIndex);
-            const path = queryIndex === -1 ? url.substring(pathIndex) : url.substring(pathIndex, queryIndex);
-            return await dev(path) || notFound;
-        }
-        return notFound;
-    }
-} satisfies Serve;
-export { dev };
+function staticData() {
+    const data = new Map<`/${string}`, Response>();
+    const entries: Entries = Object.entries;
+    for (const [encoding, map] of entries(staticDataEncode_macro() as unknown as Awaited<ReturnType<typeof staticDataEncode_macro>>))
+        for (const [type, route] of entries(map))
+            for (const [path, text] of entries(route))
+                data.set(path, new Response(Buffer.from(text, encoding), { headers: { 'Content-Type': type } }));
+    return data;
+
+    type Entries = <T extends object>(o: T) => [T extends Partial<Record<infer K, any>> ? K : never, T extends Record<any, infer V> ? V : never][];
+}
+
+export { dev, staticData };
 export { staticDataEncode as staticDataEncode_macro };

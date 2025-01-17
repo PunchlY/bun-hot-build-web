@@ -9,7 +9,7 @@
     "build": "NODE_ENV=production bun build index.ts --target=bun --minify --outfile=dist/index.js"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "1.1.14"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

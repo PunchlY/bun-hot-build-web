@@ -1,5 +1,8 @@
 # Bun The Build Tool For The Web
 
+> [Fullstack Dev Server](https://bun.sh/docs/bundler/fullstack)
+> Bun v1.1.44 添加了对直接在 Bun 的 HTTP 服务器中捆绑前端应用程序的初始支持.
+
 基于[bun](https://bun.sh/)的前端构建解决方案.
 
 Front-end building solution based on [bun](https://bun.sh/).
